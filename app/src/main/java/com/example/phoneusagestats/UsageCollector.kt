@@ -26,29 +26,14 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 负责「今天」使用数据的采集与 JSON 生成。
- * 幂等：每次都是重新查询今天 00:00 → 当前时间，并覆盖写当天 JSON，同一天重复执行结果一致。
+ * 只保存原始数据（各 App 前台秒数 + 解锁次数），不做任何分类/映射，映射由 PC 端完成。
+ * 幂等：每次重新查询今天 00:00 → 当前时间，并覆盖写当天 JSON。
  */
 object UsageCollector {
 
     private const val TAG = "UsageCollector"
     private const val PREFS = "collect_prefs"
     private const val KEY_LAST_TIME = "last_collect_time"
-
-    // 需要单独统计的 App（名称 -> packageName）。
-    // 注意：图库 / 笔记 / 系统管家服务 / 豆包 的包名在荣耀 MagicOS 上可能与下面不同，
-    // 请用本 App 列表里显示的包名核对并修改。
-    val TRACKED_APPS = listOf(
-        "哔哩哔哩" to "tv.danmaku.bili",
-        "起点读书" to "com.qidian.QDReader",
-        "飞书" to "com.ss.android.lark",
-        "图库" to "com.hihonor.photos",
-        "笔记" to "com.hihonor.notepad",
-        "系统管家服务" to "com.hihonor.systemmanager",
-        "QQ" to "com.tencent.mobileqq",
-        "微信" to "com.tencent.mm",
-        "豆包" to "com.larus.nova",
-        "Chrome" to "com.android.chrome"
-    )
 
     data class Outcome(val success: Boolean, val message: String, val filePath: String? = null)
 
@@ -79,7 +64,7 @@ object UsageCollector {
                 PackageManager.PERMISSION_GRANTED
         }
 
-    /** 采集今天 00:00→现在的用量并覆盖写当天 JSON。幂等：同一天重复执行结果一致。 */
+    /** 采集今天 00:00→现在的原始数据并覆盖写当天 JSON。幂等：同一天重复执行结果一致。 */
     fun collectAndWrite(context: Context): Outcome {
         if (!hasUsageAccess(context)) return Outcome(false, "缺少「使用情况访问」权限")
         if (!hasStorageAccess(context)) return Outcome(false, "缺少「所有文件访问」权限")
@@ -97,7 +82,7 @@ object UsageCollector {
             val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
             val date = dateFmt.format(Date(now))
 
-            // 1) 各 App 前台时长（按包名合并，排除自身）
+            // 1) 各 App 前台时长（按包名合并，排除自身）。只存原始数据，不分类。
             val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, startOfDay, now)
                 ?: emptyList()
             val byPackage = LinkedHashMap<String, Long>()
@@ -111,49 +96,22 @@ object UsageCollector {
                 AppEntry(getAppLabel(pm, pkg), pkg, ms / 1000)
             }.sortedByDescending { it.seconds }
 
-            val totalSeconds = apps.sumOf { it.seconds }
-
-            // 2) 解锁次数 = KEYGUARD_HIDDEN 计数（其它事件一并统计便于调试）
-            var unlock = 0
-            var keyguardShown = 0
-            var screenInteractive = 0
-            var screenNonInteractive = 0
-            val usageEvents = usm.queryEvents(startOfDay, now)
-            val ev = UsageEvents.Event()
-            while (usageEvents.hasNextEvent()) {
-                usageEvents.getNextEvent(ev)
-                when (ev.eventType) {
-                    UsageEvents.Event.KEYGUARD_HIDDEN -> unlock++
-                    UsageEvents.Event.KEYGUARD_SHOWN -> keyguardShown++
-                    UsageEvents.Event.SCREEN_INTERACTIVE -> screenInteractive++
-                    UsageEvents.Event.SCREEN_NON_INTERACTIVE -> screenNonInteractive++
-                }
-            }
-
-            // 3) 单独统计的 App 与「其他」
-            val trackedArr = JSONArray()
-            var trackedSeconds = 0L
-            for ((name, pkg) in TRACKED_APPS) {
-                val sec = (byPackage[pkg] ?: 0L) / 1000
-                trackedSeconds += sec
-                trackedArr.put(JSONObject().apply {
-                    put("name", name)
-                    put("packageName", pkg)
-                    put("foregroundSeconds", sec)
-                    put("formatted", formatDuration(sec * 1000))
-                })
-            }
-            val otherSeconds = totalSeconds - trackedSeconds
-
-            // 4) 全部 App
             val appsArr = JSONArray()
             for (a in apps) {
                 appsArr.put(JSONObject().apply {
                     put("label", a.label)
                     put("packageName", a.packageName)
                     put("foregroundSeconds", a.seconds)
-                    put("formatted", formatDuration(a.seconds * 1000))
                 })
+            }
+
+            // 2) 解锁次数 = 当天 KEYGUARD_HIDDEN 事件数（原始直接统计）
+            var unlock = 0
+            val usageEvents = usm.queryEvents(startOfDay, now)
+            val ev = UsageEvents.Event()
+            while (usageEvents.hasNextEvent()) {
+                usageEvents.getNextEvent(ev)
+                if (ev.eventType == UsageEvents.Event.KEYGUARD_HIDDEN) unlock++
             }
 
             val root = JSONObject().apply {
@@ -161,16 +119,7 @@ object UsageCollector {
                 put("generatedAt", timeFmt.format(Date(now)))
                 put("timezone", TimeZone.getDefault().id)
                 put("unlockCount", unlock)
-                put("keyguardShownCount", keyguardShown)
-                put("screenInteractiveCount", screenInteractive)
-                put("screenNonInteractiveCount", screenNonInteractive)
-                put("totalForegroundSeconds", totalSeconds)
-                put("totalFormatted", formatDuration(totalSeconds * 1000))
-                put("otherForegroundSeconds", otherSeconds)
-                put("otherFormatted", formatDuration(otherSeconds * 1000))
                 put("apps", appsArr)
-                put("trackedApps", trackedArr)
-                put("note", "totalForegroundSeconds 为各 App totalTimeInForeground 之和，口径可能与系统「屏幕使用时间」不同；unlockCount = 当天 KEYGUARD_HIDDEN 事件数。")
             }
 
             val file = writeJsonToPictures(date, root.toString(2))
@@ -198,16 +147,6 @@ object UsageCollector {
         pm.getApplicationLabel(ai).toString()
     } catch (e: PackageManager.NameNotFoundException) {
         packageName
-    }
-
-    fun formatDuration(millis: Long): String {
-        val totalSeconds = millis / 1000
-        if (totalSeconds < 60) return "${totalSeconds} 秒"
-        val totalMinutes = totalSeconds / 60
-        if (totalMinutes < 60) return "${totalMinutes} 分钟"
-        val hours = totalMinutes / 60
-        val minutes = totalMinutes % 60
-        return "${hours}小时${minutes}分钟"
     }
 
     /** 调度周期性采集任务（幂等，KEEP 策略不会重复调度）。 */
