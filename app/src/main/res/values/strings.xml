@@ -6,4 +6,6 @@
     <string name="btn_open_settings">打开使用情况访问权限设置</string>
     <string name="btn_refresh">刷新</string>
     <string name="btn_query_events">查询今日 Usage Events</string>
+    <string name="btn_generate_json">立即生成 JSON</string>
+    <string name="btn_grant_storage">授权所有文件访问</string>
 </resources>

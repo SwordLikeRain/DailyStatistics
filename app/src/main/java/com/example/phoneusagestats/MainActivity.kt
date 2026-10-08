@@ -1,5 +1,6 @@
 package com.example.phoneusagestats
 
+import android.Manifest
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStats
@@ -8,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
@@ -22,6 +24,8 @@ import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.work.WorkManager
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -34,10 +38,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var statusText: TextView
+    private lateinit var scheduleStatusText: TextView
     private lateinit var listView: ListView
     private lateinit var btnOpenSettings: Button
     private lateinit var btnRefresh: Button
     private lateinit var btnQueryEvents: Button
+    private lateinit var btnGenerateJson: Button
+    private lateinit var btnGrantStorage: Button
     private lateinit var eventsScrollView: ScrollView
     private lateinit var eventsOutputText: TextView
 
@@ -46,16 +53,18 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
+        scheduleStatusText = findViewById(R.id.scheduleStatusText)
         listView = findViewById(R.id.listView)
         btnOpenSettings = findViewById(R.id.btnOpenSettings)
         btnRefresh = findViewById(R.id.btnRefresh)
         btnQueryEvents = findViewById(R.id.btnQueryEvents)
+        btnGenerateJson = findViewById(R.id.btnGenerateJson)
+        btnGrantStorage = findViewById(R.id.btnGrantStorage)
         eventsScrollView = findViewById(R.id.eventsScrollView)
         eventsOutputText = findViewById(R.id.eventsOutputText)
 
         btnOpenSettings.setOnClickListener {
             // PACKAGE_USAGE_STATS 不是普通 runtime permission，不能用 requestPermissions()。
-            // 必须引导用户去系统设置页面手动授权。
             try {
                 startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
             } catch (e: Exception) {
@@ -64,19 +73,54 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        btnRefresh.setOnClickListener {
-            refresh()
+        btnRefresh.setOnClickListener { refresh() }
+
+        btnQueryEvents.setOnClickListener { queryTodayEvents() }
+
+        btnGenerateJson.setOnClickListener {
+            scheduleStatusText.text = "正在生成 JSON…"
+            Thread {
+                val outcome = UsageCollector.collectAndWrite(applicationContext)
+                runOnUiThread {
+                    scheduleStatusText.text = if (outcome.success) {
+                        "JSON 已生成：${outcome.filePath}"
+                    } else {
+                        "JSON 生成失败：${outcome.message}"
+                    }
+                    updateScheduleStatus()
+                }
+            }.start()
         }
 
-        btnQueryEvents.setOnClickListener {
-            queryTodayEvents()
+        btnGrantStorage.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                } catch (e: Exception) {
+                    try {
+                        startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "无法打开所有文件访问设置", e2)
+                    }
+                }
+            } else {
+                requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 1001)
+            }
         }
+
+        // 确保周期性采集任务已调度（幂等，KEEP 策略；首次打开 / 重启后都会走到这里）
+        UsageCollector.schedule(this)
     }
 
     override fun onResume() {
         super.onResume()
-        // 每次回到界面都刷新一次，这样从系统设置页授权返回后能立即看到结果。
         refresh()
+        updateScheduleStatus()
     }
 
     private fun refresh() {
@@ -110,6 +154,29 @@ class MainActivity : AppCompatActivity() {
             listView.adapter = null
         }
     }
+
+    private fun updateScheduleStatus() {
+        val last = UsageCollector.lastCollectTime(this)
+        val lastStr = if (last > 0) formatDateTime(last) else "从未"
+        val storageOk = UsageCollector.hasStorageAccess(this)
+        btnGrantStorage.visibility = if (storageOk) View.GONE else View.VISIBLE
+
+        val future = WorkManager.getInstance(this)
+            .getWorkInfosForUniqueWork(CollectWorker.UNIQUE_WORK_NAME)
+        future.addListener({
+            val next = try {
+                future.get().firstOrNull()?.nextScheduleTimeMillis
+            } catch (e: Exception) {
+                null
+            }
+            val nextStr =
+                if (next != null && next > 0 && next < Long.MAX_VALUE) formatDateTime(next) else "未知"
+            scheduleStatusText.text = "上次采集：$lastStr\n下次预计：$nextStr\n存储权限：${if (storageOk) "已授权" else "未授权"}"
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun formatDateTime(millis: Long): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(millis))
 
     /**
      * 判断是否已授予「使用情况访问」权限。
@@ -152,15 +219,13 @@ class MainActivity : AppCompatActivity() {
         val startOfDay = cal.timeInMillis
         val now = System.currentTimeMillis()
 
-        // 查询 [今天 00:00, 当前时刻) 范围内的日粒度 UsageStats。
         val stats: List<UsageStats> = usageStatsManager.queryUsageStats(
             UsageStatsManager.INTERVAL_DAILY,
             startOfDay,
             now
         ) ?: emptyList()
 
-        // queryUsageStats 可能对同一个 packageName 返回多条记录（多个 bucket），
-        // 这里按 packageName 合并，把每个 App 的前台时长累加，避免同一 App 出现多行。
+        // 按 packageName 合并，把每个 App 的前台时长累加，避免同一 App 出现多行。
         val totalByPackage = LinkedHashMap<String, Long>()
         for (s in stats) {
             if (s.totalTimeInForeground <= 0) continue
@@ -171,8 +236,7 @@ class MainActivity : AppCompatActivity() {
         val pm = packageManager
         val result = mutableListOf<AppUsageItem>()
         for ((pkg, time) in totalByPackage) {
-            // 可选：排除本 App 自身，避免它出现在统计列表里干扰与系统数据的对比。
-            // 如需保留本 App 的数据，注释掉下面这一行即可。
+            // 可选：排除本 App 自身。如需保留，注释掉下一行即可。
             if (pkg == packageName) continue
 
             result.add(
@@ -184,12 +248,11 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 按前台使用时长从高到低排序。
         result.sortByDescending { it.totalTimeInForeground }
         return result
     }
 
-    /** 获取 App 名称；拿不到时用 packageName 兜底，确保每一行都有可读内容。 */
+    /** 获取 App 名称；拿不到时用 packageName 兜底。 */
     private fun getAppLabel(pm: PackageManager, packageName: String): String {
         return try {
             val appInfo: ApplicationInfo = pm.getApplicationInfo(packageName, 0)
@@ -257,7 +320,6 @@ class MainActivity : AppCompatActivity() {
             val usageStatsManager =
                 getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
 
-            // 今天 00:00:00（系统当前时区）
             val cal = Calendar.getInstance()
             cal.set(Calendar.HOUR_OF_DAY, 0)
             cal.set(Calendar.MINUTE, 0)
@@ -268,7 +330,6 @@ class MainActivity : AppCompatActivity() {
 
             val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-            // 需要统计/展示的 4 种事件（API 28+ 才会产生这些事件，旧系统上数量为 0）。
             val targetTypes = listOf(
                 UsageEvents.Event.SCREEN_INTERACTIVE,
                 UsageEvents.Event.SCREEN_NON_INTERACTIVE,

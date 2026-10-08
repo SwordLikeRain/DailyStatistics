@@ -42,6 +42,28 @@
         android:layout_marginTop="8dp"
         android:text="@string/btn_query_events" />
 
+    <Button
+        android:id="@+id/btnGenerateJson"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/btn_generate_json" />
+
+    <Button
+        android:id="@+id/btnGrantStorage"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:visibility="gone"
+        android:text="@string/btn_grant_storage" />
+
+    <TextView
+        android:id="@+id/scheduleStatusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textSize="13sp" />
+
     <ListView
         android:id="@+id/listView"
         android:layout_width="match_parent"
