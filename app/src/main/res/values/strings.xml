@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">今日使用统计</string>
+    <string name="title">今日 App 使用统计</string>
+    <string name="status_no_permission">请授予使用情况访问权限</string>
+    <string name="btn_open_settings">打开使用情况访问权限设置</string>
+    <string name="btn_refresh">刷新</string>
+</resources>
