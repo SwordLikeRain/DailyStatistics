@@ -93,6 +93,32 @@
 - minSdk 23 / targetSdk 35 / compileSdk 35
 - 依赖：`androidx.appcompat:appcompat:1.7.0`、`androidx.work:work-runtime-ktx:2.9.1`
 
+## 代码架构
+
+```
+app/src/main/java/com/example/phoneusagestats/
+├── MainActivity.kt      # UI：展示使用时长/解锁次数、按钮、采集状态
+├── UsageCollector.kt    # 核心：采集 → 生成 JSON → 写文件 → 调度
+├── CollectWorker.kt     # WorkManager 后台任务（调用 UsageCollector）
+└── BootReceiver.kt      # 开机/更新后重新调度
+```
+
+| 文件 | 职责 |
+|------|------|
+| MainActivity.kt | 界面：展示各 App 时长、今日解锁次数、按钮、上次/下次采集时间；手动触发采集 |
+| UsageCollector.kt | 单例 object，核心逻辑：查 UsageStats/UsageEvents → 生成 JSON → 写 Pictures/PhoneUsage；含 schedule() / nextScheduledTime() / countTodayUnlock() 等 |
+| CollectWorker.kt | WorkManager 的 CoroutineWorker，doWork() 里调用 UsageCollector.collectAndWrite() |
+| BootReceiver.kt | 收到 BOOT_COMPLETED / MY_PACKAGE_REPLACED 时重新 schedule() |
+
+数据流：
+
+> 定时（22:30 / 23:00 / 23:30）或打开 App 或手动按钮
+> → `UsageCollector.collectAndWrite()`
+> → 查 `queryUsageStats(今天 00:00→now)` + `queryEvents(数 KEYGUARD_HIDDEN)`
+> → 拼 JSON → 写 `Pictures/PhoneUsage/YYYY-MM-DD.json`（覆盖）
+
+设计要点：幂等（每次整体重算当天、覆盖同一文件）、只存原始数据不映射、无网络权限。
+
 ## 构建（云端，无需本地 Android Studio）
 
 推送到 GitHub 后，GitHub Actions 自动构建 debug APK（`.github/workflows/build-apk.yml`）。
@@ -113,3 +139,21 @@
 - 手动：点「立即生成 JSON」，检查 `Pictures/PhoneUsage/` 下的 JSON。
 - 后台：等一个采集时间点（22:30 / 23:00 / 23:30），或打开 App 看状态栏「上次采集」时间是否更新。
 - 重启：重启手机后不打开 App，等一个时间点，看 JSON 是否仍更新。
+
+## 维护指南
+
+| 想改什么 | 改哪里 |
+|----------|--------|
+| 采集时间点（现在 22:30 / 23:00 / 23:30） | `UsageCollector.kt` 的 `schedule()` 里 `scheduleDaily(...)` 几行 + 顶部 `WORK_2230 / WORK_2300 / WORK_2330` 常量 |
+| JSON 字段 / 加字段 | `UsageCollector.collectAndWrite()` 里的 `JSONObject().apply { put(...) }` |
+| JSON 存放目录 | `UsageCollector.writeJsonToPictures()`（`DIRECTORY_PICTURES` 和 `"PhoneUsage"`） |
+| 是否排除本 App | `collectAndWrite()` 里 `if (s.packageName == context.packageName) continue` |
+| 解锁次数口径 | `countTodayUnlock()` / `collectAndWrite()` 里 KEYGUARD_HIDDEN 计数 |
+| App 版本号 | `app/build.gradle.kts` 的 `versionCode`（每次更新记得 +1，否则覆盖安装可能不生效） |
+| minSdk / targetSdk / compileSdk | `app/build.gradle.kts` 的 `defaultConfig` / `compileSdk` |
+
+改动后发布流程：
+
+1. 本地改完 → `git add -A && git commit -m "..." && git push`
+2. GitHub Actions 自动构建 debug APK
+3. 下载 artifact 解压 → 传手机覆盖安装（若版本没更新，先卸载旧版）
