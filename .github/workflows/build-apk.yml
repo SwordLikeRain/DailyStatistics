@@ -19,8 +19,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Android SDK (accept licenses, AGP auto-downloads components)
+        run: |
+          ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf '8933bad161af4178b1185d1a37fbf41ea5269c55\n' > "$ANDROID_HOME/licenses/android-sdk-license"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
 
       - name: Make gradlew executable
         run: chmod +x gradlew
