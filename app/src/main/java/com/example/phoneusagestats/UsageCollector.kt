@@ -35,9 +35,10 @@ object UsageCollector {
     private const val PREFS = "collect_prefs"
     private const val KEY_LAST_TIME = "last_collect_time"
 
-    // 每日自动采集的两个时间点（都在 22:00~23:45 窗口内）：
-    // 22:30 兜底一次，23:30 最晚、数据最全。两次都失败的概率极低，保证「至少一个」。
+    // 每日自动采集的三个时间点（都在 22:00~23:45 窗口内）：
+    // 22:30、23:00 兜底，23:30 最晚、数据最全。三个都失败的概率极低，保证「至少一个」。
     private const val WORK_2230 = "phone_usage_evening_2230"
+    private const val WORK_2300 = "phone_usage_evening_2300"
     private const val WORK_2330 = "phone_usage_evening_2330"
 
     data class Outcome(val success: Boolean, val message: String, val filePath: String? = null)
@@ -157,6 +158,7 @@ object UsageCollector {
     /** 调度每天 22:30 与 23:30 两次采集（幂等，KEEP 策略不会重复调度）。 */
     fun schedule(context: Context) {
         scheduleDaily(context, WORK_2230, 22, 30)
+        scheduleDaily(context, WORK_2300, 23, 0)
         scheduleDaily(context, WORK_2330, 23, 30)
     }
 
@@ -182,7 +184,7 @@ object UsageCollector {
     fun nextScheduledTime(context: Context): Long? = try {
         val wm = WorkManager.getInstance(context)
         val times = mutableListOf<Long>()
-        for (name in listOf(WORK_2230, WORK_2330)) {
+        for (name in listOf(WORK_2230, WORK_2300, WORK_2330)) {
             val next = wm.getWorkInfosForUniqueWork(name).get().firstOrNull()?.nextScheduleTimeMillis
             if (next != null && next > 0) times.add(next)
         }
