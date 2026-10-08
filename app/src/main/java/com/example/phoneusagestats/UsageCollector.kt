@@ -21,7 +21,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 /**
@@ -137,9 +136,8 @@ object UsageCollector {
                 })
             }
 
-            // 2) 解锁次数 = 当天 KEYGUARD_HIDDEN 事件数，并记录每次解锁的时间戳
+            // 2) 解锁次数 = 当天 KEYGUARD_HIDDEN 事件数，并记录每次解锁的时间
             var unlock = 0
-            val unlockTimes = JSONArray()
             val unlockTimesText = JSONArray()
             val timeOfDayFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
             val usageEvents = usm.queryEvents(startOfDay, now)
@@ -148,7 +146,6 @@ object UsageCollector {
                 usageEvents.getNextEvent(ev)
                 if (ev.eventType == UsageEvents.Event.KEYGUARD_HIDDEN) {
                     unlock++
-                    unlockTimes.put(ev.timeStamp)
                     unlockTimesText.put(timeOfDayFmt.format(Date(ev.timeStamp)))
                 }
             }
@@ -156,9 +153,7 @@ object UsageCollector {
             val root = JSONObject().apply {
                 put("date", date)
                 put("generatedAt", timeFmt.format(Date(now)))
-                put("timezone", TimeZone.getDefault().id)
                 put("unlockCount", unlock)
-                put("unlockTimes", unlockTimes)
                 put("unlockTimesText", unlockTimesText)
                 put("apps", appsArr)
             }
