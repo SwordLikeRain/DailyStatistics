@@ -70,6 +70,32 @@ object UsageCollector {
                 PackageManager.PERMISSION_GRANTED
         }
 
+    /** 统计今天 KEYGUARD_HIDDEN 事件数（即解锁次数）。 */
+    fun countTodayUnlock(context: Context): Int {
+        if (!hasUsageAccess(context)) return 0
+        return try {
+            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val cal = Calendar.getInstance()
+            cal.set(Calendar.HOUR_OF_DAY, 0)
+            cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0)
+            cal.set(Calendar.MILLISECOND, 0)
+            val startOfDay = cal.timeInMillis
+            val now = System.currentTimeMillis()
+            var unlock = 0
+            val usageEvents = usm.queryEvents(startOfDay, now)
+            val ev = UsageEvents.Event()
+            while (usageEvents.hasNextEvent()) {
+                usageEvents.getNextEvent(ev)
+                if (ev.eventType == UsageEvents.Event.KEYGUARD_HIDDEN) unlock++
+            }
+            unlock
+        } catch (e: Exception) {
+            Log.e(TAG, "统计解锁次数失败", e)
+            0
+        }
+    }
+
     /** 采集今天 00:00→现在的原始数据并覆盖写当天 JSON。幂等：同一天重复执行结果一致。 */
     fun collectAndWrite(context: Context): Outcome {
         if (!hasUsageAccess(context)) return Outcome(false, "缺少「使用情况访问」权限")
@@ -111,13 +137,20 @@ object UsageCollector {
                 })
             }
 
-            // 2) 解锁次数 = 当天 KEYGUARD_HIDDEN 事件数（原始直接统计）
+            // 2) 解锁次数 = 当天 KEYGUARD_HIDDEN 事件数，并记录每次解锁的时间戳
             var unlock = 0
+            val unlockTimes = JSONArray()
+            val unlockTimesText = JSONArray()
+            val timeOfDayFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
             val usageEvents = usm.queryEvents(startOfDay, now)
             val ev = UsageEvents.Event()
             while (usageEvents.hasNextEvent()) {
                 usageEvents.getNextEvent(ev)
-                if (ev.eventType == UsageEvents.Event.KEYGUARD_HIDDEN) unlock++
+                if (ev.eventType == UsageEvents.Event.KEYGUARD_HIDDEN) {
+                    unlock++
+                    unlockTimes.put(ev.timeStamp)
+                    unlockTimesText.put(timeOfDayFmt.format(Date(ev.timeStamp)))
+                }
             }
 
             val root = JSONObject().apply {
@@ -125,6 +158,8 @@ object UsageCollector {
                 put("generatedAt", timeFmt.format(Date(now)))
                 put("timezone", TimeZone.getDefault().id)
                 put("unlockCount", unlock)
+                put("unlockTimes", unlockTimes)
+                put("unlockTimesText", unlockTimesText)
                 put("apps", appsArr)
             }
 
