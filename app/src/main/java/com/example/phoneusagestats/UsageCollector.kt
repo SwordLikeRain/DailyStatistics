@@ -35,6 +35,11 @@ object UsageCollector {
     private const val PREFS = "collect_prefs"
     private const val KEY_LAST_TIME = "last_collect_time"
 
+    // 每日自动采集的两个时间点（都在 22:00~23:45 窗口内）：
+    // 22:30 兜底一次，23:30 最晚、数据最全。两次都失败的概率极低，保证「至少一个」。
+    private const val WORK_2230 = "phone_usage_evening_2230"
+    private const val WORK_2330 = "phone_usage_evening_2330"
+
     data class Outcome(val success: Boolean, val message: String, val filePath: String? = null)
 
     private data class AppEntry(val label: String, val packageName: String, val seconds: Long)
@@ -149,23 +154,39 @@ object UsageCollector {
         packageName
     }
 
-    /** 调度周期性采集任务（幂等，KEEP 策略不会重复调度）。 */
+    /** 调度每天 22:30 与 23:30 两次采集（幂等，KEEP 策略不会重复调度）。 */
     fun schedule(context: Context) {
-        val request = PeriodicWorkRequestBuilder<CollectWorker>(1, TimeUnit.HOURS).build()
+        scheduleDaily(context, WORK_2230, 22, 30)
+        scheduleDaily(context, WORK_2330, 23, 30)
+    }
+
+    private fun scheduleDaily(context: Context, name: String, hour: Int, minute: Int) {
+        val now = Calendar.getInstance()
+        val next = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= now.timeInMillis) add(Calendar.DAY_OF_YEAR, 1)
+        }
+        val delay = next.timeInMillis - now.timeInMillis
+        val request = PeriodicWorkRequestBuilder<CollectWorker>(24, TimeUnit.HOURS)
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .build()
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            CollectWorker.UNIQUE_WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
-            request
+            name, ExistingPeriodicWorkPolicy.KEEP, request
         )
     }
 
-    /** 下次预计执行时间（毫秒）；拿不到返回 null。 */
+    /** 下次预计执行时间（两次任务里最早的那次）；拿不到返回 null。 */
     fun nextScheduledTime(context: Context): Long? = try {
-        WorkManager.getInstance(context)
-            .getWorkInfosForUniqueWork(CollectWorker.UNIQUE_WORK_NAME)
-            .get()
-            .firstOrNull()
-            ?.nextScheduleTimeMillis
+        val wm = WorkManager.getInstance(context)
+        val times = mutableListOf<Long>()
+        for (name in listOf(WORK_2230, WORK_2330)) {
+            val next = wm.getWorkInfosForUniqueWork(name).get().firstOrNull()?.nextScheduleTimeMillis
+            if (next != null && next > 0) times.add(next)
+        }
+        times.minOrNull()
     } catch (e: Exception) {
         null
     }

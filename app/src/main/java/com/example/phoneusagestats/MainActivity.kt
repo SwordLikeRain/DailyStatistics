@@ -23,9 +23,8 @@ import android.widget.Button
 import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
-import androidx.work.WorkManager
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -82,11 +81,17 @@ class MainActivity : AppCompatActivity() {
             Thread {
                 val outcome = UsageCollector.collectAndWrite(applicationContext)
                 runOnUiThread {
-                    scheduleStatusText.text = if (outcome.success) {
+                    val msg = if (outcome.success) {
                         "JSON 已生成：${outcome.filePath}"
                     } else {
                         "JSON 生成失败：${outcome.message}"
                     }
+                    scheduleStatusText.text = msg
+                    Toast.makeText(
+                        this,
+                        if (outcome.success) "JSON 已生成" else "生成失败：${outcome.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     updateScheduleStatus()
                 }
             }.start()
@@ -113,8 +118,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 确保周期性采集任务已调度（幂等，KEEP 策略；首次打开 / 重启后都会走到这里）
+        // 确保每日采集任务已调度（幂等，KEEP 策略；首次打开 / 重启后都会走到这里）
         UsageCollector.schedule(this)
+        // 「打开 App 立即采集一次」：后台被杀后第一次回来，必定立即刷新一次 JSON
+        triggerImmediateCollect()
     }
 
     override fun onResume() {
@@ -135,7 +142,6 @@ class MainActivity : AppCompatActivity() {
 
         statusText.text = "正在读取今天的使用数据…"
         btnOpenSettings.visibility = View.GONE
-        // 回到 App 使用时长视图
         listView.visibility = View.VISIBLE
         eventsScrollView.visibility = View.GONE
 
@@ -148,11 +154,18 @@ class MainActivity : AppCompatActivity() {
             }
             listView.adapter = AppUsageAdapter(items)
         } catch (e: Exception) {
-            // 不静默吞掉异常：记录日志并显示给用户。
             Log.e(TAG, "读取使用统计失败", e)
             statusText.text = "读取使用统计失败：" + e.message
             listView.adapter = null
         }
+    }
+
+    private fun triggerImmediateCollect() {
+        Thread {
+            val outcome = UsageCollector.collectAndWrite(applicationContext)
+            Log.i(TAG, "打开即采集 success=${outcome.success} msg=${outcome.message}")
+            runOnUiThread { updateScheduleStatus() }
+        }.start()
     }
 
     private fun updateScheduleStatus() {
@@ -161,18 +174,14 @@ class MainActivity : AppCompatActivity() {
         val storageOk = UsageCollector.hasStorageAccess(this)
         btnGrantStorage.visibility = if (storageOk) View.GONE else View.VISIBLE
 
-        val future = WorkManager.getInstance(this)
-            .getWorkInfosForUniqueWork(CollectWorker.UNIQUE_WORK_NAME)
-        future.addListener({
-            val next = try {
-                future.get().firstOrNull()?.nextScheduleTimeMillis
-            } catch (e: Exception) {
-                null
-            }
+        Thread {
+            val next = UsageCollector.nextScheduledTime(this)
             val nextStr =
                 if (next != null && next > 0 && next < Long.MAX_VALUE) formatDateTime(next) else "未知"
-            scheduleStatusText.text = "上次采集：$lastStr\n下次预计：$nextStr\n存储权限：${if (storageOk) "已授权" else "未授权"}"
-        }, ContextCompat.getMainExecutor(this))
+            runOnUiThread {
+                scheduleStatusText.text = "上次采集：$lastStr\n下次预计：$nextStr\n存储权限：${if (storageOk) "已授权" else "未授权"}"
+            }
+        }.start()
     }
 
     private fun formatDateTime(millis: Long): String =
@@ -210,7 +219,6 @@ class MainActivity : AppCompatActivity() {
         val usageStatsManager =
             getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
 
-        // 今天 00:00:00（使用系统当前时区）。Calendar 默认就是系统时区。
         val cal = Calendar.getInstance()
         cal.set(Calendar.HOUR_OF_DAY, 0)
         cal.set(Calendar.MINUTE, 0)
@@ -225,7 +233,6 @@ class MainActivity : AppCompatActivity() {
             now
         ) ?: emptyList()
 
-        // 按 packageName 合并，把每个 App 的前台时长累加，避免同一 App 出现多行。
         val totalByPackage = LinkedHashMap<String, Long>()
         for (s in stats) {
             if (s.totalTimeInForeground <= 0) continue

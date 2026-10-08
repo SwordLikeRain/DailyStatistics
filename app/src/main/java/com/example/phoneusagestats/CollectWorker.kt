@@ -22,7 +22,6 @@ class CollectWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     }
 
     companion object {
-        const val UNIQUE_WORK_NAME = "phone_usage_daily_collect"
         private const val TAG = "CollectWorker"
     }
 }
