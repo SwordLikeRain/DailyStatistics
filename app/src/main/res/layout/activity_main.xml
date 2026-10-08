@@ -35,6 +35,13 @@
         android:layout_marginTop="8dp"
         android:text="@string/btn_refresh" />
 
+    <Button
+        android:id="@+id/btnQueryEvents"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/btn_query_events" />
+
     <ListView
         android:id="@+id/listView"
         android:layout_width="match_parent"
@@ -43,4 +50,21 @@
         android:layout_weight="1"
         android:divider="@android:color/darker_gray"
         android:dividerHeight="1dp" />
+
+    <ScrollView
+        android:id="@+id/eventsScrollView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_weight="1"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/eventsOutputText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+    </ScrollView>
 </LinearLayout>

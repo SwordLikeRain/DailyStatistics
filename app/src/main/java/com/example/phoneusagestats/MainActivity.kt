@@ -1,6 +1,7 @@
 package com.example.phoneusagestats
 
 import android.app.AppOpsManager
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
@@ -18,9 +19,13 @@ import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,6 +37,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var listView: ListView
     private lateinit var btnOpenSettings: Button
     private lateinit var btnRefresh: Button
+    private lateinit var btnQueryEvents: Button
+    private lateinit var eventsScrollView: ScrollView
+    private lateinit var eventsOutputText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +49,9 @@ class MainActivity : AppCompatActivity() {
         listView = findViewById(R.id.listView)
         btnOpenSettings = findViewById(R.id.btnOpenSettings)
         btnRefresh = findViewById(R.id.btnRefresh)
+        btnQueryEvents = findViewById(R.id.btnQueryEvents)
+        eventsScrollView = findViewById(R.id.eventsScrollView)
+        eventsOutputText = findViewById(R.id.eventsOutputText)
 
         btnOpenSettings.setOnClickListener {
             // PACKAGE_USAGE_STATS 不是普通 runtime permission，不能用 requestPermissions()。
@@ -56,6 +67,10 @@ class MainActivity : AppCompatActivity() {
         btnRefresh.setOnClickListener {
             refresh()
         }
+
+        btnQueryEvents.setOnClickListener {
+            queryTodayEvents()
+        }
     }
 
     override fun onResume() {
@@ -69,11 +84,16 @@ class MainActivity : AppCompatActivity() {
             statusText.text = getString(R.string.status_no_permission)
             btnOpenSettings.visibility = View.VISIBLE
             listView.adapter = null
+            listView.visibility = View.VISIBLE
+            eventsScrollView.visibility = View.GONE
             return
         }
 
         statusText.text = "正在读取今天的使用数据…"
         btnOpenSettings.visibility = View.GONE
+        // 回到 App 使用时长视图
+        listView.visibility = View.VISIBLE
+        eventsScrollView.visibility = View.GONE
 
         try {
             val items = queryTodayUsageStats()
@@ -220,5 +240,92 @@ class MainActivity : AppCompatActivity() {
         val hours = totalMinutes / 60
         val minutes = totalMinutes % 60
         return "${hours}小时${minutes}分钟"
+    }
+
+    /**
+     * 查询今天 00:00 到当前的 Usage Events，统计并展示屏幕交互 / Keyguard 事件。
+     * 当前只展示原始事件，不做任何「解锁次数」推断。
+     */
+    private fun queryTodayEvents() {
+        if (!hasUsageAccessPermission()) {
+            statusText.text = getString(R.string.status_no_permission)
+            btnOpenSettings.visibility = View.VISIBLE
+            return
+        }
+
+        try {
+            val usageStatsManager =
+                getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+
+            // 今天 00:00:00（系统当前时区）
+            val cal = Calendar.getInstance()
+            cal.set(Calendar.HOUR_OF_DAY, 0)
+            cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0)
+            cal.set(Calendar.MILLISECOND, 0)
+            val startOfDay = cal.timeInMillis
+            val now = System.currentTimeMillis()
+
+            val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+            // 需要统计/展示的 4 种事件（API 28+ 才会产生这些事件，旧系统上数量为 0）。
+            val targetTypes = listOf(
+                UsageEvents.Event.SCREEN_INTERACTIVE,
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE,
+                UsageEvents.Event.KEYGUARD_SHOWN,
+                UsageEvents.Event.KEYGUARD_HIDDEN
+            )
+
+            val counts = mutableMapOf<Int, Int>()
+            val detailLines = mutableListOf<String>()
+
+            val usageEvents = usageStatsManager.queryEvents(startOfDay, now)
+            val event = UsageEvents.Event()
+            while (usageEvents.hasNextEvent()) {
+                usageEvents.getNextEvent(event)
+                val type = event.eventType
+                if (type in targetTypes) {
+                    counts[type] = (counts[type] ?: 0) + 1
+                    val time = timeFmt.format(Date(event.timeStamp))
+                    val pkg = event.packageName?.takeIf { it.isNotBlank() } ?: ""
+                    detailLines.add("$time  ${eventTypeName(type)}  $pkg".trimEnd())
+                }
+            }
+
+            val sb = StringBuilder()
+            sb.append("今日 Usage Events（自 ")
+            sb.append(timeFmt.format(Date(startOfDay)))
+            sb.append(" 起，共 ")
+            sb.append(detailLines.size)
+            sb.append(" 条目标事件）\n\n")
+            sb.append("事件计数：\n")
+            for (type in targetTypes) {
+                sb.append(eventTypeName(type))
+                sb.append("  ")
+                sb.append(counts[type] ?: 0)
+                sb.append("\n")
+            }
+            sb.append("\n事件明细（按时间顺序）：\n")
+            for (line in detailLines) {
+                sb.append(line).append("\n")
+            }
+
+            eventsOutputText.text = sb.toString()
+            eventsScrollView.scrollTo(0, 0)
+            listView.visibility = View.GONE
+            eventsScrollView.visibility = View.VISIBLE
+            statusText.text = "事件查询完成，共 ${detailLines.size} 条"
+        } catch (e: Exception) {
+            Log.e(TAG, "查询 Usage Events 失败", e)
+            statusText.text = "查询 Usage Events 失败：" + e.message
+        }
+    }
+
+    private fun eventTypeName(type: Int): String = when (type) {
+        UsageEvents.Event.SCREEN_INTERACTIVE -> "SCREEN_INTERACTIVE"
+        UsageEvents.Event.SCREEN_NON_INTERACTIVE -> "SCREEN_NON_INTERACTIVE"
+        UsageEvents.Event.KEYGUARD_SHOWN -> "KEYGUARD_SHOWN"
+        UsageEvents.Event.KEYGUARD_HIDDEN -> "KEYGUARD_HIDDEN"
+        else -> "EVENT_$type"
     }
 }
